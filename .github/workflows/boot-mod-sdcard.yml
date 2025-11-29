@@ -54,9 +54,9 @@ jobs:
           sudo apt-get install -y wget python3 python3-pip file
           sudo apt-get autoremove --purge -qq
           sudo apt-get clean
-          sudo pip3 install gdown mediafire-dl
-          wget -q https://mega.nz/linux/repo/xUbuntu_20.04/amd64/megacmd-xUbuntu_20.04_amd64.deb
-          sudo apt-get install -y ./megacmd-xUbuntu_20.04_amd64.deb
+          sudo pip3 install gdown mediafiredl
+          wget -q https://mega.nz/linux/repo/xUbuntu_22.04/amd64/megacmd_2.1.1-1.1_amd64.deb
+          sudo apt-get install -y ./megacmd_2.1.1-1.1_amd64.deb
           sudo timedatectl set-timezone "$TZ"
           sudo mkdir -p ${{ env.WORK_DIR }}/openwrt
           sudo chown -R $USER:$USER ${{ env.WORK_DIR }}
