@@ -3,13 +3,14 @@
 # https://github.com/Haris131/boot-mod-sdcard
 #==========================================================================
 
-name: "Boot Mod SD Card (Fixed)"
+name: boot mod sdcard ( fix )
 
 on:
+  #repository_dispatch:
   workflow_dispatch:
     inputs:
       type_dtb:
-        description: "Select device type"
+        description: "Select type file"
         required: false
         default: "b860h"
         type: choice
@@ -17,7 +18,7 @@ on:
           - b860h
           - hg680p
       type_file:
-        description: "Select compression type"
+        description: "Select type file"
         required: false
         default: "img.xz"
         type: choice
@@ -25,231 +26,122 @@ on:
           - img.xz
           - img.gz
       img_url:
-        description: "URL of the firmware image file"
+        description: "Set the url img file"
         required: true
         default: ""
       name_file:
-        description: "Custom firmware name"
+        description: "Rename Firmware"
         required: true
         default: "FW-MOD-SDCARD"
 
 env:
   TZ: Asia/Jakarta
-  WORK_DIR: /workdir
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@main
 
-      - name: Initialize environment
+      - name: Initialization environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo apt-get update -qq
-          sudo apt-get install -y wget python3 python3-pip file
-          sudo apt-get autoremove --purge -qq
-          sudo apt-get clean
-          sudo pip3 install gdown mediafiredl
-          wget -q https://mega.nz/linux/repo/xUbuntu_22.04/amd64/megacmd_2.1.1-1.1_amd64.deb
-          sudo apt-get install -y ./megacmd_2.1.1-1.1_amd64.deb
+          sudo -E apt-get -qq update
+          sudo -E apt-get -y install wget python3
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo pip3 install gdown
+          sudo pip3 install git+https://github.com/Juvenal-Yescas/mediafire-dl
+          megacmd_ver=$(sudo cat /etc/*ease | grep "DISTRIB_RELEASE" | awk -F "=" '{print $2}')
+          wget https://mega.nz/linux/repo/xUbuntu_${megacmd_ver}/amd64/megacmd-xUbuntu_${megacmd_ver}_amd64.deb && sudo apt install "$PWD/megacmd-xUbuntu_${megacmd_ver}_amd64.deb"
           sudo timedatectl set-timezone "$TZ"
-          sudo mkdir -p ${{ env.WORK_DIR }}/openwrt
-          sudo chown -R $USER:$USER ${{ env.WORK_DIR }}
 
-      - name: Download firmware file
-        working-directory: ${{ env.WORK_DIR }}
+      - name: Download file ${{ github.event.inputs.type_file }}
         run: |
-          set -e
-          echo "Downloading firmware file..."
           df -hT $PWD
-          
-          IMG_URL="${{ github.event.inputs.img_url }}"
-          OUTPUT_FILE="openwrt/${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}"
-          
-          if [[ "$IMG_URL" == *"drive.google.com"* ]]; then
-            if [[ "$IMG_URL" =~ /d/([^/]+)/ ]]; then
-              link_gdrive="${BASH_REMATCH[1]}"
-            elif [[ "$IMG_URL" =~ id=([^&]+) ]]; then
-              link_gdrive="${BASH_REMATCH[1]}"
+          if [ $(echo ${{ github.event.inputs.img_url }} | grep "drive.") ]; then
+            if [ $(echo ${{ github.event.inputs.img_url }} | awk -F "/" '{print $6}') ]; then
+              link_gdrive=$(echo ${{ github.event.inputs.img_url }} | awk -F "/" '{print $6}')
             else
-              link_gdrive=$(echo "$IMG_URL" | awk -F "/" '{print $4}' | awk -F "?id=" '{print $2}' | awk -F "&export" '{print $1}')
+              link_gdrive=$(echo ${{ github.event.inputs.img_url }} | awk -F "/" '{print $4}' | awk -F "?id=" '{print $2}'|awk -F "&export" '{print $1}')
             fi
-            echo "Downloading from Google Drive: $link_gdrive"
-            gdown "$link_gdrive" -O "$OUTPUT_FILE"
-            
-          elif [[ "$IMG_URL" == *"mediafire.com"* ]]; then
-            echo "Downloading from MediaFire"
-            mediafire-dl "$IMG_URL" -o "$OUTPUT_FILE"
-            
-          elif [[ "$IMG_URL" == *"mega.nz"* ]]; then
-            echo "Downloading from MEGA"
-            mega-get "$IMG_URL" "$OUTPUT_FILE"
-            
+            sudo gdown ${link_gdrive} -O ${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}
           else
-            echo "Downloading via wget"
-            wget --no-check-certificate -q --show-progress "$IMG_URL" -O "$OUTPUT_FILE"
+            if [ $(echo ${{ github.event.inputs.img_url }} | grep "mediafire.com") ]; then
+              sudo mediafire-dl ${{ github.event.inputs.img_url }} -o ${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}
+            else
+              if [ $(echo ${{ github.event.inputs.img_url }} | grep "mega.nz") ]; then
+                file_mega=$(sudo mega-get ${{ github.event.inputs.img_url }} | awk -F: '{print $2}')
+                sudo mv ${file_mega} ${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}
+              else
+                sudo wget --no-check-certificate ${{ github.event.inputs.img_url }} -O ${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}
+              fi
+            fi
           fi
-          
-          # Verify downloaded file
-          if [[ -f "$OUTPUT_FILE" ]]; then
-            echo "Download successful: $(ls -lh "$OUTPUT_FILE")"
-            file "$OUTPUT_FILE" || true
-          else
-            echo "ERROR: Download failed - file not found"
-            exit 1
-          fi
-          
-          # Create symlink
-          ln -sf ${{ env.WORK_DIR }}/openwrt $GITHUB_WORKSPACE/openwrt
 
-      - name: Extract and patch firmware
-        id: patch_firmware
+      - name: Extract firmware
+        id: extract
         run: |
-          set -e
-          echo "Starting firmware patching process..."
-          
-          # Copy required files
-          cp u-boot.bin ${{ env.WORK_DIR }}/openwrt/
-          cp boot-mod-sdcard.tar.gz ${{ env.WORK_DIR }}/openwrt/
-          
-          cd ${{ env.WORK_DIR }}/openwrt
-          
-          # Decompress based on file type
-          INPUT_FILE="${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}"
-          OUTPUT_IMG="${{ github.event.inputs.name_file }}.img"
-          
-          if [[ "${{ github.event.inputs.type_file }}" == "img.gz" ]]; then
-            echo "Decompressing gzip file..."
-            gunzip -c "$INPUT_FILE" > "$OUTPUT_IMG"
+          sudo mkdir -p boot
+          if [ ${{ github.event.inputs.type_file }} = "img.gz" ]; then
+            sudo gunzip ${{ github.event.inputs.name_file }}.img.gz
           else
-            echo "Decompressing xz file..."
-            unxz -c "$INPUT_FILE" > "$OUTPUT_IMG"
+            sudo unxz ${{ github.event.inputs.name_file }}.img.xz
           fi
-          
-          # Verify decompressed image
-          if [[ ! -f "$OUTPUT_IMG" ]]; then
-            echo "ERROR: Decompression failed"
-            exit 1
-          fi
-          
-          echo "Image size: $(ls -lh "$OUTPUT_IMG")"
-          
-          # Mount and patch
-          mkdir -p boot
-          device=$(losetup -fP --show "$OUTPUT_IMG")
-          echo "Using loop device: $device"
-          
-          # Wait for partitions to be available
-          sleep 2
-          lsblk || true
-          
-          mount "${device}p1" boot
-          
-          echo "Extracting boot modification files..."
-          (cd boot && tar xfz ../boot-mod-sdcard.tar.gz)
-          
-          # Patch extlinux.conf
-          echo "Patching extlinux.conf..."
-          uenv=$(grep "APPEND" boot/uEnv.txt | awk -F "root=" '{print $2}')
-          extlinux=$(grep "APPEND" boot/extlinux/extlinux.conf | awk -F "root=" '{print $2}')
-          
-          if [[ -n "$uenv" && -n "$extlinux" ]]; then
-            sed -i "s|$extlinux|$uenv|g" boot/extlinux/extlinux.conf
-            echo "extlinux.conf patched successfully"
-          else
-            echo "WARNING: Could not find APPEND parameters for patching"
-          fi
-          
-          # Patch boot files with correct DTB
-          echo "Patching boot files with DTB..."
-          if [[ "${{ github.event.inputs.type_dtb }}" == "b860h" ]]; then
-            dtb="meson-gxl-s905x-b860h.dtb"
-          elif [[ "${{ github.event.inputs.type_dtb }}" == "hg680p" ]]; then
-            dtb="meson-gxl-s905x-p212.dtb"
-          else
-            dtb="meson-gxl-s905x-b860h.dtb"
-          fi
-          
-          # Patch boot.ini
-          if [[ -f "boot/boot.ini" ]]; then
-            old_dtb=$(grep "dtb" boot/boot.ini | head -1 | awk -F "/" '{print $4}' | cut -d'"' -f1)
-            if [[ -n "$old_dtb" ]]; then
-              sed -i "s|$old_dtb|$dtb|g" boot/boot.ini
-              echo "boot.ini patched: $old_dtb -> $dtb"
-            fi
-          fi
-          
-          # Patch extlinux.conf DTB
-          if [[ -f "boot/extlinux/extlinux.conf" ]]; then
-            old_dtb=$(grep "dtb" boot/extlinux/extlinux.conf | head -1 | awk -F "/" '{print $4}')
-            if [[ -n "$old_dtb" ]]; then
-              sed -i "s|$old_dtb|$dtb|g" boot/extlinux/extlinux.conf
-              echo "extlinux.conf DTB patched: $old_dtb -> $dtb"
-            fi
-          fi
-          
-          # Unmount
-          umount boot
+          device=$(sudo losetup -fP --show ${{ github.event.inputs.name_file }}.img)
+          sudo mount ${device}p1 boot
+          (cd boot && sudo tar xfz ../boot-mod-sdcard.tar.gz)
+          echo -e "Patching extlinux.conf"
+          uenv=$(sudo cat boot/uEnv.txt | grep APPEND | awk -F "root=" '{print $2}')
+          extlinux=$(sudo cat boot/extlinux/extlinux.conf | grep APPEND | awk -F "root=" '{print $2}')
+          sudo sed -i "s/$extlinux/$uenv/g" boot/extlinux/extlinux.conf
           sleep 1
-          losetup -d "$device"
-          
-          # Add Amlogic Bootloader
-          echo "Adding Amlogic Bootloader..."
-          device=$(losetup -fP --show "$OUTPUT_IMG")
-          dd if=u-boot.bin of="$device" bs=1 count=444 conv=fsync 2>/dev/null
-          dd if=u-boot.bin of="$device" bs=512 skip=1 seek=1 conv=fsync 2>/dev/null
-          losetup -d "$device"
-          
-          echo "Patching completed successfully"
-          
-          # Recompress the image
-          echo "Compressing final image..."
-          if [[ "${{ github.event.inputs.type_file }}" == "img.gz" ]]; then
-            gzip "$OUTPUT_IMG"
-            FINAL_FILE="$OUTPUT_IMG.gz"
-          else
-            xz -z "$OUTPUT_IMG"
-            FINAL_FILE="$OUTPUT_IMG.xz"
+          echo -e "Patching boot.ini"
+          if [ ${{ github.event.inputs.type_dtb }} = "b860h" ]; then
+            dtb="meson-gxl-s905x-b860h.dtb"
+          elif [ ${{ github.event.inputs.type_dtb }} = "hg680p" ]; then
+            dtb="meson-gxl-s905x-p212.dtb"
           fi
-          
-          echo "Final file: $FINAL_FILE"
-          ls -lh "$FINAL_FILE"
-          
-          # Set outputs
-          echo "FIRMWARE=$PWD/$FINAL_FILE" >> $GITHUB_ENV
+          boot=$(sudo cat boot/boot.ini | grep dtb | awk -F "/" '{print $4}' | cut -d'"' -f1)
+          sudo sed -i "s/$boot/$dtb/g" boot/boot.ini
+          sudo sed -i "s/$boot/$dtb/g" boot/extlinux/extlinux.conf
+          sudo umount ${device}p1
+          sleep 1
+          echo -e "Adding Amlogic Bootloader"
+          sudo dd if=u-boot.bin of=${device} bs=1 count=444 conv=fsync 2>/dev/null
+          sudo dd if=u-boot.bin of=${device} bs=512 skip=1 seek=1 conv=fsync 2>/dev/null
+          sudo losetup -d ${device}
+          echo -e "Patching Success"
+          sleep 1
+          echo -e "Compress file img"
+          if [ ${{ github.event.inputs.type_file }} = "img.gz" ]; then
+            sudo gzip ${{ github.event.inputs.name_file }}.img
+          else
+            sudo xz ${{ github.event.inputs.name_file }}.img
+          fi
+          echo -e "Compress Success"
+          echo "FIRMWARE=$PWD/${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Verify final files
-        run: |
-          echo "Final files in ${{ env.WORK_DIR }}/openwrt:"
-          ls -la ${{ env.WORK_DIR }}/openwrt/
-          echo "Firmware path: $FIRMWARE"
-          if [[ -f "$FIRMWARE" ]]; then
-            echo "✓ Firmware file exists"
-            ls -lh "$FIRMWARE"
-          else
-            echo "✗ Firmware file missing!"
-            exit 1
-          fi
-
-      - name: Upload firmware to release
-        uses: softprops/action-gh-release@v1
+      - name: Upload firmware for b860h
+        if: ${{ github.event.inputs.type_dtb == 'b860h' }}
+        uses: svenstaro/upload-release-action@v2
         with:
-          tag_name: "${{ github.event.inputs.type_dtb }}-${{ github.run_id }}"
-          name: "${{ github.event.inputs.type_dtb }} Firmware Release"
-          body: |
-            Custom firmware for ${{ github.event.inputs.type_dtb }}
-            - File: ${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}
-            - Build: ${{ github.run_id }}
-            - Date: ${{ fromJSON(format('"{0}"', toJSON(github.event.repository.updated_at))) }}
-          files: |
-            ${{ env.FIRMWARE }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ env.FIRMWARE }}
+          tag: b860h-${{ github.ref }}
+          release_name: "B860H Firmware Release"
+
+      - name: Upload firmware for hg680p
+        if: ${{ github.event.inputs.type_dtb == 'hg680p' }}
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: $ {{ env.FIRMWARE }}
+          tag: hg680p-${{ github.ref }}
+          release_name: "HG680P Firmware Release"
