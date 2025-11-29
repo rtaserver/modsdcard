@@ -3,34 +3,33 @@
 # https://github.com/Haris131/boot-mod-sdcard
 #==========================================================================
 
-name: boot mod sdcard ( fix )
+name: Boot Mod SD Card (Fixed)
 
 on:
-  #repository_dispatch:
   workflow_dispatch:
     inputs:
       type_dtb:
-        description: "Select type file"
-        required: false
+        description: "Select device type"
+        required: true
         default: "b860h"
         type: choice
         options:
           - b860h
           - hg680p
       type_file:
-        description: "Select type file"
-        required: false
+        description: "Select compression format"
+        required: true
         default: "img.xz"
         type: choice
         options:
           - img.xz
           - img.gz
       img_url:
-        description: "Set the url img file"
+        description: "Firmware image URL"
         required: true
         default: ""
       name_file:
-        description: "Rename Firmware"
+        description: "Output firmware name"
         required: true
         default: "FW-MOD-SDCARD"
 
@@ -45,103 +44,188 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
 
-      - name: Initialization environment
+      - name: Initialize environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo -E apt-get -qq update
-          sudo -E apt-get -y install wget python3
+          sudo -E apt-get -y install wget python3 python3-pip
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
+          sudo pip3 install --upgrade pip
           sudo pip3 install gdown
           sudo pip3 install git+https://github.com/Juvenal-Yescas/mediafire-dl
-          megacmd_ver=$(sudo cat /etc/*ease | grep "DISTRIB_RELEASE" | awk -F "=" '{print $2}')
-          wget https://mega.nz/linux/repo/xUbuntu_${megacmd_ver}/amd64/megacmd-xUbuntu_${megacmd_ver}_amd64.deb && sudo apt install "$PWD/megacmd-xUbuntu_${megacmd_ver}_amd64.deb"
+          
+          # Install megacmd
+          megacmd_ver=$(grep "DISTRIB_RELEASE" /etc/lsb-release | cut -d'=' -f2)
+          wget https://mega.nz/linux/repo/xUbuntu_${megacmd_ver}/amd64/megacmd-xUbuntu_${megacmd_ver}_amd64.deb
+          sudo apt install -y "$PWD/megacmd-xUbuntu_${megacmd_ver}_amd64.deb"
+          
           sudo timedatectl set-timezone "$TZ"
 
-      - name: Download file ${{ github.event.inputs.type_file }}
+      - name: Download firmware image
         run: |
           df -hT $PWD
-          if [ $(echo ${{ github.event.inputs.img_url }} | grep "drive.") ]; then
-            if [ $(echo ${{ github.event.inputs.img_url }} | awk -F "/" '{print $6}') ]; then
-              link_gdrive=$(echo ${{ github.event.inputs.img_url }} | awk -F "/" '{print $6}')
+          
+          URL="${{ github.event.inputs.img_url }}"
+          OUTPUT="${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}"
+          
+          if echo "$URL" | grep -q "drive.google.com"; then
+            # Google Drive
+            if echo "$URL" | grep -q "/file/d/"; then
+              FILE_ID=$(echo "$URL" | sed -n 's|.*file/d/\([^/]*\).*|\1|p')
             else
-              link_gdrive=$(echo ${{ github.event.inputs.img_url }} | awk -F "/" '{print $4}' | awk -F "?id=" '{print $2}'|awk -F "&export" '{print $1}')
+              FILE_ID=$(echo "$URL" | sed -n 's|.*[?&]id=\([^&]*\).*|\1|p')
             fi
-            sudo gdown ${link_gdrive} -O ${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}
+            sudo gdown "$FILE_ID" -O "$OUTPUT"
+          elif echo "$URL" | grep -q "mediafire.com"; then
+            # MediaFire
+            sudo mediafire-dl "$URL" -o "$OUTPUT"
+          elif echo "$URL" | grep -q "mega.nz"; then
+            # Mega
+            TEMP_FILE=$(sudo mega-get "$URL" 2>&1 | grep -oP '(?<=Downloaded: ).*')
+            sudo mv "$TEMP_FILE" "$OUTPUT"
           else
-            if [ $(echo ${{ github.event.inputs.img_url }} | grep "mediafire.com") ]; then
-              sudo mediafire-dl ${{ github.event.inputs.img_url }} -o ${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}
-            else
-              if [ $(echo ${{ github.event.inputs.img_url }} | grep "mega.nz") ]; then
-                file_mega=$(sudo mega-get ${{ github.event.inputs.img_url }} | awk -F: '{print $2}')
-                sudo mv ${file_mega} ${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}
-              else
-                sudo wget --no-check-certificate ${{ github.event.inputs.img_url }} -O ${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}
-              fi
-            fi
+            # Direct download
+            sudo wget --no-check-certificate "$URL" -O "$OUTPUT"
+          fi
+          
+          if [ ! -f "$OUTPUT" ]; then
+            echo "Error: Download failed!"
+            exit 1
           fi
 
-      - name: Extract firmware
+      - name: Extract and patch firmware
         id: extract
         run: |
           sudo mkdir -p boot
-          if [ ${{ github.event.inputs.type_file }} = "img.gz" ]; then
-            sudo gunzip ${{ github.event.inputs.name_file }}.img.gz
+          
+          # Extract image
+          if [ "${{ github.event.inputs.type_file }}" = "img.gz" ]; then
+            sudo gunzip "${{ github.event.inputs.name_file }}.img.gz"
           else
-            sudo unxz ${{ github.event.inputs.name_file }}.img.xz
+            sudo unxz "${{ github.event.inputs.name_file }}.img.xz"
           fi
-          device=$(sudo losetup -fP --show ${{ github.event.inputs.name_file }}.img)
-          sudo mount ${device}p1 boot
+          
+          # Mount image
+          DEVICE=$(sudo losetup -fP --show "${{ github.event.inputs.name_file }}.img")
+          echo "Loop device: $DEVICE"
+          sudo mount "${DEVICE}p1" boot
+          
+          # Extract boot modification files
           (cd boot && sudo tar xfz ../boot-mod-sdcard.tar.gz)
-          echo -e "Patching extlinux.conf"
-          uenv=$(sudo cat boot/uEnv.txt | grep APPEND | awk -F "root=" '{print $2}')
-          extlinux=$(sudo cat boot/extlinux/extlinux.conf | grep APPEND | awk -F "root=" '{print $2}')
-          sudo sed -i "s/$extlinux/$uenv/g" boot/extlinux/extlinux.conf
-          sleep 1
-          echo -e "Patching boot.ini"
-          if [ ${{ github.event.inputs.type_dtb }} = "b860h" ]; then
-            dtb="meson-gxl-s905x-b860h.dtb"
-          elif [ ${{ github.event.inputs.type_dtb }} = "hg680p" ]; then
-            dtb="meson-gxl-s905x-p212.dtb"
+          
+          # Patch extlinux.conf
+          echo "Patching extlinux.conf..."
+          UENV=$(sudo grep "APPEND" boot/uEnv.txt | sed -n 's/.*root=\(.*\)/\1/p')
+          EXTLINUX=$(sudo grep "APPEND" boot/extlinux/extlinux.conf | sed -n 's/.*root=\(.*\)/\1/p')
+          sudo sed -i "s|$EXTLINUX|$UENV|g" boot/extlinux/extlinux.conf
+          
+          # Patch boot.ini with correct DTB
+          echo "Patching boot.ini..."
+          if [ "${{ github.event.inputs.type_dtb }}" = "b860h" ]; then
+            DTB="meson-gxl-s905x-b860h.dtb"
+          elif [ "${{ github.event.inputs.type_dtb }}" = "hg680p" ]; then
+            DTB="meson-gxl-s905x-p212.dtb"
           fi
-          boot=$(sudo cat boot/boot.ini | grep dtb | awk -F "/" '{print $4}' | cut -d'"' -f1)
-          sudo sed -i "s/$boot/$dtb/g" boot/boot.ini
-          sudo sed -i "s/$boot/$dtb/g" boot/extlinux/extlinux.conf
-          sudo umount ${device}p1
+          
+          BOOT_DTB=$(sudo grep "dtb" boot/boot.ini | grep -oP '(?<=/)[^/"]+\.dtb')
+          sudo sed -i "s|$BOOT_DTB|$DTB|g" boot/boot.ini
+          sudo sed -i "s|$BOOT_DTB|$DTB|g" boot/extlinux/extlinux.conf
+          
+          # Unmount
+          sudo umount "${DEVICE}p1"
           sleep 1
-          echo -e "Adding Amlogic Bootloader"
-          sudo dd if=u-boot.bin of=${device} bs=1 count=444 conv=fsync 2>/dev/null
-          sudo dd if=u-boot.bin of=${device} bs=512 skip=1 seek=1 conv=fsync 2>/dev/null
-          sudo losetup -d ${device}
-          echo -e "Patching Success"
-          sleep 1
-          echo -e "Compress file img"
-          if [ ${{ github.event.inputs.type_file }} = "img.gz" ]; then
-            sudo gzip ${{ github.event.inputs.name_file }}.img
+          
+          # Add Amlogic bootloader
+          echo "Adding Amlogic bootloader..."
+          sudo dd if=u-boot.bin of="${DEVICE}" bs=1 count=444 conv=fsync 2>/dev/null
+          sudo dd if=u-boot.bin of="${DEVICE}" bs=512 skip=1 seek=1 conv=fsync 2>/dev/null
+          sudo losetup -d "${DEVICE}"
+          
+          echo "Patching completed successfully!"
+          
+          # Compress image
+          echo "Compressing firmware..."
+          if [ "${{ github.event.inputs.type_file }}" = "img.gz" ]; then
+            sudo gzip -9 "${{ github.event.inputs.name_file }}.img"
           else
-            sudo xz ${{ github.event.inputs.name_file }}.img
+            sudo xz -9 "${{ github.event.inputs.name_file }}.img"
           fi
-          echo -e "Compress Success"
+          
+          # Get file size
+          FILE_SIZE=$(du -h "${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}" | cut -f1)
+          
           echo "FIRMWARE=$PWD/${{ github.event.inputs.name_file }}.${{ github.event.inputs.type_file }}" >> $GITHUB_ENV
+          echo "FILE_SIZE=$FILE_SIZE" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Upload firmware for b860h
-        if: ${{ github.event.inputs.type_dtb == 'b860h' }}
+      - name: Generate release notes
+        run: |
+          cat > release_notes.md << EOF
+          # 🚀 Modified Firmware for ${{ github.event.inputs.type_dtb }}
+          
+          ## 📦 Build Information
+          - **Device**: ${{ github.event.inputs.type_dtb == 'b860h' && 'B860H' || 'HG680P' }}
+          - **Build Date**: ${{ env.BUILD_DATE }}
+          - **File Size**: ${{ env.FILE_SIZE }}
+          - **Compression**: ${{ github.event.inputs.type_file }}
+          
+          ## ✨ Modifications Applied
+          - ✅ Bootloader configured for SD card boot
+          - ✅ DTB updated for ${{ github.event.inputs.type_dtb }}
+          - ✅ Extlinux configuration patched
+          - ✅ Amlogic U-Boot installed
+          
+          ## 📝 Installation Instructions
+          1. Extract the firmware image
+          2. Flash to SD card using balenaEtcher or dd command
+          3. Insert SD card into device
+          4. Power on and boot from SD card
+          
+          ## ⚠️ Important Notes
+          - Make sure to backup your data before flashing
+          - Use a high-quality SD card (Class 10 or better)
+          - Minimum 8GB SD card recommended
+          
+          ## 🔗 Source
+          Original firmware URL: ${{ github.event.inputs.img_url }}
+          
+          ---
+          *Built with ❤️ by boot-mod-sdcard workflow*
+          EOF
+
+      - name: Upload firmware for B860H
+        if: github.event.inputs.type_dtb == 'b860h'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: ${{ env.FIRMWARE }}
-          tag: b860h-${{ github.ref }}
-          release_name: "B860H Firmware Release"
+          tag: b860h-${{ github.run_number }}
+          release_name: "🔥 B860H Firmware - Build #${{ github.run_number }}"
+          body_path: release_notes.md
+          overwrite: true
 
-      - name: Upload firmware for hg680p
-        if: ${{ github.event.inputs.type_dtb == 'hg680p' }}
+      - name: Upload firmware for HG680P
+        if: github.event.inputs.type_dtb == 'hg680p'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: $ {{ env.FIRMWARE }}
-          tag: hg680p-${{ github.ref }}
-          release_name: "HG680P Firmware Release"
+          file: ${{ env.FIRMWARE }}
+          tag: hg680p-${{ github.run_number }}
+          release_name: "🔥 HG680P Firmware - Build #${{ github.run_number }}"
+          body_path: release_notes.md
+          overwrite: true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: firmware-${{ github.event.inputs.type_dtb }}-${{ github.run_number }}
+          path: |
+            ${{ env.FIRMWARE }}
+            release_notes.md
+          retention-days: 30
