@@ -44,25 +44,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@main
 
-      - name: Initialize environment
+      - name: Initialization environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo -E apt-get -qq update
-          sudo -E apt-get -y install wget python3 python3-pip
+          sudo -E apt-get -y install wget python3
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
-          sudo pip3 install --upgrade pip
           sudo pip3 install gdown
           sudo pip3 install git+https://github.com/Juvenal-Yescas/mediafire-dl
-          
-          # Install megacmd
-          megacmd_ver=$(grep "DISTRIB_RELEASE" /etc/lsb-release | cut -d'=' -f2)
-          wget https://mega.nz/linux/repo/xUbuntu_${megacmd_ver}/amd64/megacmd-xUbuntu_${megacmd_ver}_amd64.deb
-          sudo apt install -y "$PWD/megacmd-xUbuntu_${megacmd_ver}_amd64.deb"
-          
+          megacmd_ver=$(sudo cat /etc/*ease | grep "DISTRIB_RELEASE" | awk -F "=" '{print $2}')
+          wget https://mega.nz/linux/repo/xUbuntu_${megacmd_ver}/amd64/megacmd-xUbuntu_${megacmd_ver}_amd64.deb && sudo apt install "$PWD/megacmd-xUbuntu_${megacmd_ver}_amd64.deb"
           sudo timedatectl set-timezone "$TZ"
 
       - name: Download firmware image
